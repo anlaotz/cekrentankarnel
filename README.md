@@ -1,91 +1,806 @@
-# Dirty Frag: Universal Linux LPE
+# Dirty Frag Defensive Research Lab
 
 <p align="center">
-  <img src="assets/tux.png" width="400" alt="tux">
+  <img src="assets/tux.png" width="180" alt="Dirty Frag">
 </p>
 
-# Abstract
+<p align="center">
+  <b>Dirty Frag Defensive Checker</b><br>
+  Audit, Observasi, Mitigasi, dan Hardening Linux Kernel
+</p>
 
-![tux](assets/demo.gif)
+---
 
-This document describes the Dirty Frag vulnerability class, first discovered and reported by [Hyunwoo Kim (@v4bel)](https://x.com/v4bel), which can obtain root privileges on major Linux distributions by chaining the `xfrm-ESP Page-Cache Write` vulnerability and the `RxRPC Page-Cache Write` vulnerability.
+# Disclaimer
 
-Dirty Frag is a case that extends the bug class to which [Dirty Pipe](https://dirtypipe.cm4all.com/) and [Copy Fail](https://copy.fail/) belong. Because it is a deterministic logic bug that does not depend on a timing window, no race condition is required, the kernel does not panic when the exploit fails, and the success rate is very high.
+⚠️ Repository ini dibuat untuk:
 
-For detailed technical information and the timeline, [see here](assets/write-up.md).
+* penelitian defensif
+* audit keamanan kernel Linux
+* observasi behavior subsystem kernel
+* incident response
+* hardening Linux
+* pembelajaran keamanan sistem operasi
 
-Because the embargo has currently been broken, no patch or CVE exists. After consultation with the maintainers on linux-distros@vs.openwall.org and at their request, this Dirty Frag document is being published. For the disclosure timeline, refer to the technical details.
+Bukan untuk penggunaan terhadap sistem tanpa izin.
 
-> [!NOTE]
-> **2026-05-08 Update:**
-> - The `xfrm-ESP Page-Cache Write` vulnerability has been assigned `CVE-2026-43284` and patched in mainline at [f4c50a4034e6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=f4c50a4034e62ab75f1d5cdd191dd5f9c77fdff4).
-> - The `RxRPC Page-Cache Write` vulnerability has been reserved as `CVE-2026-43500` for tracking; no patch exists in any tree yet.
+Gunakan hanya pada:
 
-# Exploiting
+* VM terisolasi
+* environment lab
+* sistem milik sendiri
 
-## One-line special
+Selalu gunakan snapshot sebelum pengujian.
 
+---
+
+# Fitur
+
+## cekrentankarnel.sh
+
+Script utama mendukung:
+
+| Mode     | Fungsi                    |
+| -------- | ------------------------- |
+| start    | audit defensif kernel     |
+| status   | status cepat subsystem    |
+| mitigasi | blacklist & unload module |
+| restore  | restore mitigasi          |
+| simulasi | compile & observasi aman  |
+| help     | bantuan penggunaan        |
+
+---
+
+## Apa Itu Dirty Frag?
+
+Dirty Frag adalah kelas kerentanan Local Privilege Escalation (LPE) pada kernel Linux yang memungkinkan user biasa memperoleh hak akses root melalui manipulasi page cache kernel menggunakan subsystem networking Linux.
+
+Dirty Frag merupakan turunan dari bug class yang sama dengan:
+
+* Dirty Pipe
+* Copy Fail
+
+Kerentanan ini memanfaatkan:
+
+* RxRPC subsystem
+* XFRM/IPsec ESP subsystem
+* namespace interaction
+* page cache overwrite primitive
+
+Pada beberapa distribusi Linux modern, kombinasi subsystem tersebut dapat digunakan untuk melakukan privilege escalation dari:
+
+```text
+uid=1000 → uid=0
 ```
-git clone https://github.com/V4bel/dirtyfrag.git && cd dirtyfrag && gcc -O0 -Wall -o exp exp.c -lutil && ./exp
-```
 
-This PoC is provided as accurate information following consultation with linux-distros. Do not use it on systems that you are not authorized to test.
+---
 
-## Cleanup
+# Masalah Utama
 
-⚠️  **Important:** After running this exploit, the page cache is contaminated. To clear the polluted page cache and ensure system stability, either run:
+Masalah utama Dirty Frag adalah:
+
+* module rentan aktif secara default
+* attack surface tersedia pada banyak distro besar
+* exploit bersifat deterministic
+* tidak memerlukan race condition
+* namespace dan networking subsystem dapat dipakai untuk memodifikasi page cache
+* attacker lokal dapat memperoleh akses root
+
+Subsystem utama yang terkait:
+
+| Subsystem      | Fungsi                     |
+| -------------- | -------------------------- |
+| rxrpc          | protocol networking        |
+| esp4 / esp6    | IPsec ESP transformation   |
+| xfrm_algo      | crypto/XFRM framework      |
+| PF_ALG         | userspace crypto interface |
+| user namespace | privilege boundary         |
+
+---
+
+# Tujuan Lab
+
+Lab ini dibuat untuk:
+
+* analisis defensif Dirty Frag
+* audit kernel Linux
+* observasi AppArmor
+* observasi RxRPC/XFRM
+* incident response simulation
+* detection engineering
+* hardening Linux
+* validasi mitigasi
+
+Lab ini TIDAK dibuat untuk menyerang sistem lain.
+
+---
+
+## Deskripsi
+
+Repository/lab ini digunakan untuk:
+
+* Audit defensif Dirty Frag
+* Validasi attack surface kernel Linux
+* Observasi behavior AppArmor
+* Observasi RxRPC/XFRM subsystem
+* Validasi mitigasi sementara
+* Monitoring kernel log
+* Incident response & detection engineering
+
+⚠️ Penting:
+
+Lab ini ditujukan untuk:
+
+* lingkungan VM terisolasi
+* penelitian defensif
+* pembelajaran keamanan kernel
+* hardening Linux
+
+Bukan untuk penggunaan terhadap sistem yang tidak memiliki izin.
+
+---
+
+# Environment Pengujian
+
+## Sistem Operasi
+
+* Ubuntu 24.04.3 LTS
+
+## Kernel
 
 ```bash
-echo 3 > /proc/sys/vm/drop_caches
+uname -r
+6.8.0-101-generic
 ```
 
-or reboot the system.
+## Hypervisor
 
-# Affected Versions
+* VirtualBox
 
-- `CVE-2026-43284`: xfrm-ESP Page-Cache Write vulnerability is in scope from [cac2661c53f3 (2017-01-17)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cac2661c53f3) up to [f4c50a4034e6 (2026-05-05)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=f4c50a4034e62ab75f1d5cdd191dd5f9c77fdff4).
-- `CVE-2026-43500`: RxRPC Page-Cache Write vulnerability is in scope from [2dc334f1a63a (2023-06-08)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=2dc334f1a63a) up to upstream.
+---
 
-In other words, the effective lifetime of the vulnerabilities is about 9 years.
+# Struktur Repository
 
-This Dirty Frag has been tested on the following distribution versions.
+```text
+.
+├── assets/
+│   ├── demo.gif
+│   ├── tux.png
+│   └── write-up.md
+├── cekrentankarnel.sh
+├── exp.c
+└── README.md
+```
 
-- Ubuntu 24.04.4: 6.17.0-23-generic
-- RHEL 10.1: 6.12.0-124.49.1.el10_1.x86_64
-- openSUSE Tumbleweed: 7.0.2-1-default
-- CentOS Stream 10: 6.12.0-224.el10.x86_64
-- AlmaLinux 10: 6.12.0-124.52.3.el10_1.x86_64
-- Fedora 44: 6.19.14-300.fc44.x86_64
-- ...
+---
 
-# Mitigation
+# Instalasi
 
+## Clone Repository
 
-1. Because the responsible disclosure schedule and the embargo have been broken, no patch exists for any distribution. Use the following command to remove the modules in which the vulnerabilities occur and clear the page cache.
 ```bash
-sh -c "printf 'install esp4 /bin/false\ninstall esp6 /bin/false\ninstall rxrpc /bin/false\n' > /etc/modprobe.d/dirtyfrag.conf; rmmod esp4 esp6 rxrpc 2>/dev/null; echo 3 > /proc/sys/vm/drop_caches; true"
+git clone https://github.com/anlaotz/cekrentankarnel
+cd cekrentankarnel
 ```
 
-2. Once each distribution backports a patch, update accordingly.
+## Permission Script
 
-# FAQ
+```bash
+chmod +x cekrentankarnel.sh
+```
 
-## Why did you chain two vulnerabilities?
+---
 
-xfrm-ESP Page-Cache Write provides a powerful arbitrary 4-byte STORE primitive like Copy Fail, and is included on most distributions, but it requires the privilege to create a namespace. 
+# Penggunaan Cepat
 
-Ubuntu sometimes blocks unprivileged user namespace creation through AppArmor policy. In such an environment, xfrm-ESP Page-Cache Write cannot be triggered. RxRPC Page-Cache Write does not require the privilege to create a namespace, but the `rxrpc.ko` module itself is not included in most distributions. However, on Ubuntu, the `rxrpc.ko` module is loaded by default. 
+## Help
 
-Chaining the two variants makes the blind spots cover each other, allowing root privileges to be obtained on every major distribution. For details, refer to the technical details document.
+```bash
+./cekrentankarnel.sh -h
+```
 
-## Another "branded" "Dirty" series?
+## Audit Defensif
 
-Yeah, yeah, I know. However, this vulnerability is a descendant of "Dirty Pipe", and it is a bug class that "dirties" the `frag` member of `struct sk_buff`, so this name is the most appropriate.
+```bash
+sudo ./cekrentankarnel.sh start
+```
 
-## What is its relationship with the "Copy Fail" vulnerability?
+## Status Cepat
 
-Copy Fail was the motivation for starting this research. In particular, xfrm-ESP Page-Cache Write in the Dirty Frag vulnerability chain shares the same sink as Copy Fail. However, it is triggered regardless of whether the algif_aead module is available. In other words, even on systems where the publicly known Copy Fail mitigation (algif_aead blacklist) is applied, your Linux is still vulnerable to Dirty Frag.
+```bash
+./cekrentankarnel.sh status
+```
 
-## So, how do I fix my Linux?
+## Mitigasi
 
-Refer to the Mitigation and [Disclosure Timeline sections](assets/write-up.md). Due to external factors, the embargo has been broken, so no patch exists for any distribution.
+```bash
+sudo ./cekrentankarnel.sh mitigasi
+```
+
+## Restore Mitigasi
+
+```bash
+sudo ./cekrentankarnel.sh restore
+```
+
+## Simulasi Aman
+
+```bash
+./cekrentankarnel.sh simulasi
+```
+
+---
+
+# Struktur File
+
+```text
+.
+├── exp.c
+├── cekrentankarnel.sh
+└── README.md
+```
+
+---
+
+# Persiapan Lab
+
+## 1. Buat Snapshot VM
+
+Di VirtualBox:
+
+```text
+Machine → Take Snapshot
+```
+
+Nama:
+
+```text
+dirtyfrag-clean
+```
+
+---
+
+# Permission Script
+
+```bash
+chmod +x cekrentankarnel.sh
+```
+
+---
+
+# Bantuan Script
+
+```bash
+./cekrentankarnel.sh -h
+```
+
+atau:
+
+```bash
+./cekrentankarnel.sh help
+```
+
+---
+
+# Audit Defensif
+
+## Menjalankan Audit
+
+```bash
+./cekrentankarnel.sh start
+```
+
+Script akan:
+
+* cek versi kernel
+* cek distro
+* cek module:
+
+  * esp4
+  * esp6
+  * rxrpc
+* cek namespace
+* cek AppArmor
+* cek RxRPC logs
+* cek XFRM state
+* cek module aktif
+
+---
+
+# Monitoring Kernel
+
+Buka terminal kedua:
+
+```bash
+sudo journalctl -kf
+```
+
+Perhatikan event seperti:
+
+```text
+Registered PF_RXRPC protocol family
+Registered PF_ALG protocol family
+operation="userns_create"
+capname="sys_admin"
+```
+
+---
+
+# Namespace Testing
+
+## User Namespace
+
+```bash
+unshare -Ur bash
+```
+
+Pada Ubuntu + AppArmor biasanya:
+
+```text
+write failed /proc/self/uid_map: Operation not permitted
+```
+
+---
+
+# Module Testing
+
+## Load Module
+
+```bash
+sudo modprobe rxrpc
+sudo modprobe esp4
+sudo modprobe esp6
+```
+
+## Verifikasi
+
+```bash
+lsmod | grep -E 'rxrpc|esp4|esp6'
+```
+
+Contoh hasil:
+
+```text
+esp6
+esp4
+xfrm_algo
+rxrpc
+```
+
+---
+
+# Observasi Kernel Module
+
+## Informasi Module
+
+```bash
+modinfo esp4
+modinfo esp6
+modinfo rxrpc
+```
+
+## Dependency
+
+```bash
+modinfo esp4 | grep depends
+```
+
+---
+
+# IOC (Indicators of Compromise)
+
+Perhatikan IOC berikut:
+
+| IOC                 | Keterangan                    |
+| ------------------- | ----------------------------- |
+| PF_RXRPC            | RxRPC aktif                   |
+| PF_ALG              | crypto subsystem aktif        |
+| userns_create       | namespace creation            |
+| capname="sys_admin" | capability escalation attempt |
+| rxrpc registered    | RxRPC keyring aktif           |
+
+---
+
+# Mitigasi Sementara
+
+## Menggunakan Script
+
+```bash
+./cekrentankarnel.sh mitigasi
+```
+
+Script akan:
+
+* blacklist esp4
+* blacklist esp6
+* blacklist rxrpc
+* unload module
+* drop page cache
+
+---
+
+# Verifikasi Mitigasi
+
+## Test modprobe
+
+```bash
+sudo modprobe rxrpc
+```
+
+Jika mitigasi berhasil:
+
+```text
+modprobe: ERROR
+```
+
+## Verifikasi lsmod
+
+```bash
+lsmod | grep -E 'rxrpc|esp4|esp6'
+```
+
+Harus kosong.
+
+---
+
+# Restore Mitigasi
+
+```bash
+./cekrentankarnel.sh restore
+```
+
+---
+
+# Cleanup Setelah Pengujian
+
+## Drop Cache
+
+```bash
+echo 3 | sudo tee /proc/sys/vm/drop_caches
+```
+
+## Reboot
+
+```bash
+sudo reboot
+```
+
+Atau rollback snapshot VirtualBox.
+
+---
+
+# Hardening Tambahan
+
+## Disable User Namespace
+
+Temporary:
+
+```bash
+sudo sysctl -w kernel.unprivileged_userns_clone=0
+```
+
+Permanent:
+
+```bash
+echo 'kernel.unprivileged_userns_clone=0' | sudo tee /etc/sysctl.d/99-userns.conf
+```
+
+---
+
+# Tujuan Pembelajaran
+
+Lab ini cocok untuk:
+
+* Linux kernel security
+* AppArmor behavior
+* RxRPC subsystem
+* XFRM/IPsec subsystem
+* namespace security
+* auditd monitoring
+* eBPF tracing
+* incident response
+* detection engineering
+* kernel hardening
+
+---
+
+# Catatan Penting
+
+* Gunakan hanya di VM/lab terisolasi
+* Jangan gunakan pada sistem produksi
+* Selalu buat snapshot sebelum pengujian
+* Selalu lakukan cleanup setelah observasi
+* Selalu update kernel saat patch tersedia
+
+---
+
+# Workflow Analisis
+
+## Tahap 1 — Audit Awal
+
+```bash
+sudo ./cekrentankarnel.sh start
+```
+
+Script akan memeriksa:
+
+* versi kernel
+* distro Linux
+* module rentan
+* AppArmor
+* namespace
+* RxRPC
+* XFRM/IPsec
+* kernel logs
+
+---
+
+## Tahap 2 — Monitoring Kernel
+
+Buka terminal kedua:
+
+```bash
+sudo journalctl -kf
+```
+
+IOC yang penting:
+
+```text
+Registered PF_RXRPC protocol family
+Registered PF_ALG protocol family
+operation="userns_create"
+capname="sys_admin"
+```
+
+---
+
+## Tahap 3 — Observasi Namespace
+
+```bash
+unshare -Ur bash
+```
+
+Pada Ubuntu modern biasanya:
+
+```text
+write failed /proc/self/uid_map
+```
+
+karena AppArmor restriction.
+
+---
+
+## Tahap 4 — Load Module
+
+```bash
+sudo modprobe rxrpc
+sudo modprobe esp4
+sudo modprobe esp6
+```
+
+Verifikasi:
+
+```bash
+lsmod | grep -E 'rxrpc|esp4|esp6'
+```
+
+---
+
+## Tahap 5 — Simulasi Aman
+
+```bash
+./cekrentankarnel.sh simulasi
+```
+
+Mode simulasi:
+
+* compile source observasi
+* melihat metadata binary
+* observasi syscall
+* TIDAK menjalankan privilege escalation
+
+---
+
+# Hasil Validasi Lab
+
+## Sebelum Mitigasi
+
+Hasil audit menunjukkan:
+
+```text
+rxrpc aktif
+esp4 aktif
+esp6 aktif
+```
+
+Kernel log menunjukkan:
+
+```text
+NET: Registered PF_RXRPC protocol family
+Key type rxrpc registered
+Key type rxrpc_s registered
+```
+
+Artinya:
+
+* subsystem RxRPC aktif
+* ESP/XFRM aktif
+* attack surface tersedia
+* environment cocok dengan karakteristik Dirty Frag
+
+---
+
+## Observasi Validasi Lab
+
+Pada lab VM Ubuntu 24.04 kernel 6.8:
+
+* user biasa memiliki:
+
+```text
+uid=1000(and)
+```
+
+* observasi kernel menunjukkan interaction:
+
+```text
+operation="userns_create"
+Registered PF_RXRPC protocol family
+Registered PF_ALG protocol family
+```
+
+* validasi laboratorium menunjukkan privilege escalation berhasil terjadi pada environment pengujian terisolasi.
+
+Bukti observasi:
+
+```text
+uid=0(root)
+```
+
+Hal ini menunjukkan:
+
+* attack surface benar-benar reachable
+* kernel subsystem aktif
+* mitigasi diperlukan
+
+⚠️ Catatan:
+
+README ini tidak menyertakan langkah eksploitasi rinci. Fokus dokumentasi adalah:
+
+* audit defensif
+* observasi kernel
+* validasi mitigasi
+* incident response
+* hardening
+
+---
+
+## Sesudah Mitigasi
+
+Setelah menjalankan:
+
+```bash
+./cekrentankarnel.sh mitigasi
+```
+
+hasil audit berubah menjadi:
+
+```text
+rxrpc tidak aktif
+esp4 tidak aktif
+esp6 tidak aktif
+```
+
+Kernel log menunjukkan:
+
+```text
+NET: Unregistered PF_RXRPC protocol family
+Key type rxrpc unregistered
+```
+
+Artinya:
+
+* subsystem RxRPC berhasil dimatikan
+* attack surface dipersempit
+* mitigasi berhasil diterapkan
+
+---
+
+# Setelah Mitigasi
+
+Setelah:
+
+```bash
+sudo ./cekrentankarnel.sh mitigasi
+```
+
+hasil audit menunjukkan:
+
+```text
+rxrpc tidak aktif
+esp4 tidak aktif
+esp6 tidak aktif
+```
+
+Kernel log:
+
+```text
+NET: Unregistered PF_RXRPC protocol family
+Key type rxrpc unregistered
+```
+
+Artinya:
+
+* subsystem berhasil dimatikan
+* attack surface dipersempit
+* mitigasi berhasil diterapkan
+
+---
+
+# Hardening Tambahan
+
+## Disable User Namespace
+
+Temporary:
+
+```bash
+sudo sysctl -w kernel.unprivileged_userns_clone=0
+```
+
+Permanent:
+
+```bash
+echo 'kernel.unprivileged_userns_clone=0' | sudo tee /etc/sysctl.d/99-userns.conf
+```
+
+---
+
+# IOC (Indicators of Compromise)
+
+| IOC                 | Keterangan                    |
+| ------------------- | ----------------------------- |
+| PF_RXRPC            | RxRPC protocol aktif          |
+| PF_ALG              | crypto subsystem aktif        |
+| userns_create       | namespace creation            |
+| capname="sys_admin" | capability escalation attempt |
+| rxrpc registered    | RxRPC keyring aktif           |
+
+---
+
+# Tujuan Pembelajaran
+
+Repository/lab ini cocok untuk:
+
+* Linux kernel security
+* AppArmor analysis
+* RxRPC subsystem
+* XFRM/IPsec subsystem
+* namespace security
+* auditd monitoring
+* eBPF tracing
+* incident response
+* detection engineering
+* kernel hardening
+
+---
+
+# Catatan Penting
+
+* Gunakan hanya di VM/lab terisolasi
+* Jangan gunakan pada sistem produksi
+* Selalu buat snapshot sebelum pengujian
+* Selalu lakukan cleanup setelah observasi
+* Selalu update kernel saat patch tersedia
+* Selalu reboot atau rollback snapshot setelah eksperimen
+
+---
+
+# Ringkasan
+
+Environment Ubuntu 24.04 kernel 6.8 pada lab ini menunjukkan:
+
+* attack surface tersedia
+* rxrpc tersedia
+* esp4/esp6 tersedia
+* namespace interaction aktif
+* AppArmor restriction aktif
+* cocok untuk penelitian defensif Dirty Frag
